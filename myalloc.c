@@ -96,18 +96,29 @@ static block_t *grow(size_t need)
     return b;
 }
 
+/* first-fit: the first free block that is big enough, or NULL */
+static block_t *find_fit(size_t need)
+{
+    for (block_t *b = head; b != NULL; b = b->next)
+        if (b->free && b->size >= need)
+            return b;
+    return NULL;
+}
+
 /* ---- public API ---- */
 
 void *my_malloc(size_t size)
 {
-    if (size == 0)
+    if (size == 0 || size > SIZE_MAX / 2)
         return NULL;
     size_t need = align_up(size);
 
-    /* Task 2: every request gets a fresh block from the OS */
-    block_t *b = grow(need);
-    if (b == NULL)
-        return NULL;
+    block_t *b = find_fit(need);
+    if (b == NULL) {
+        b = grow(need);               /* no hole fits: get more memory */
+        if (b == NULL)
+            return NULL;
+    }
     b->free = 0;
     return payload(b);
 }
