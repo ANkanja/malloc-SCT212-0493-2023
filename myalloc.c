@@ -229,16 +229,61 @@ void my_free(void *ptr)
 
 void *my_calloc(size_t n, size_t size)
 {
-    (void)n;
-    (void)size;
-    return NULL;
+    /* n * size would overflow: check without doing the multiply */
+    if (n != 0 && size > SIZE_MAX / n)
+        return NULL;
+
+    size_t total = n * size;
+    void *p = my_malloc(total);
+    if (p != NULL)
+        memset(p, 0, total);
+    return p;
 }
 
 void *my_realloc(void *ptr, size_t size)
 {
-    (void)ptr;
-    (void)size;
-    return NULL;
+    if (ptr == NULL)                  /* behaves like malloc */
+        return my_malloc(size);
+    if (size == 0) {                  /* behaves like free */
+        my_free(ptr);
+        return NULL;
+    }
+
+    block_t *b = find_block(ptr);
+    if (b == NULL || b->free) {
+        report("my_realloc: invalid pointer\n");
+        return NULL;
+    }
+    if (size > SIZE_MAX / 2)
+        return NULL;
+    size_t need = align_up(size);
+
+    /* 1. already big enough: keep it, give back the unused tail */
+    if (need <= b->size) {
+        split(b, need);
+        coalesce();                   /* tail may touch a free block */
+        return ptr;
+    }
+
+    /* 2. next block is free, adjacent and big enough: absorb it */
+    block_t *n = b->next;
+    if (n != NULL && n->free && block_end(b) == (char *)n &&
+        b->size + HDR + n->size >= need) {
+        b->size += HDR + n->size;
+        b->next  = n->next;
+        if (tail == n)
+            tail = b;
+        split(b, need);
+        return ptr;
+    }
+
+    /* 3. otherwise move: new block, copy, free the old one */
+    void *q = my_malloc(size);
+    if (q == NULL)
+        return NULL;                  /* old block is left untouched */
+    memcpy(q, ptr, b->size < size ? b->size : size);
+    my_free(ptr);
+    return q;
 }
 
 /* fill in the statistics by walking the list once */
