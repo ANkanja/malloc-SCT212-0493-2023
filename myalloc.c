@@ -105,6 +105,31 @@ static block_t *find_fit(size_t need)
     return NULL;
 }
 
+#define MIN_PAYLOAD 16                /* smallest block worth splitting off */
+
+/*
+ * If b is bigger than needed, cut it in two: b keeps exactly `need`
+ * bytes and the rest becomes a new free block right after it.
+ * Only splits when the rest can hold a header plus MIN_PAYLOAD.
+ */
+static void split(block_t *b, size_t need)
+{
+    if (b->size < need + HDR + MIN_PAYLOAD)
+        return;                       /* too small: give the whole block */
+
+    /* byte arithmetic on char *, not block_t * */
+    block_t *rest = (block_t *)((char *)payload(b) + need);
+    rest->size  = b->size - need - HDR;
+    rest->next  = b->next;
+    rest->free  = 1;
+    rest->magic = MAGIC;
+
+    b->size = need;
+    b->next = rest;
+    if (tail == b)
+        tail = rest;
+}
+
 /* ---- public API ---- */
 
 void *my_malloc(size_t size)
@@ -119,6 +144,7 @@ void *my_malloc(size_t size)
         if (b == NULL)
             return NULL;
     }
+    split(b, need);
     b->free = 0;
     return payload(b);
 }
@@ -142,9 +168,24 @@ void *my_realloc(void *ptr, size_t size)
     return NULL;
 }
 
+/* fill in the statistics by walking the list once */
 void heap_stats(heap_stats_t *out)
 {
+    if (out == NULL)
+        return;
     memset(out, 0, sizeof *out);
+    out->heap_bytes = heap_total;
+    for (block_t *b = head; b != NULL; b = b->next) {
+        if (b->free) {
+            out->free_blocks++;
+            out->free_bytes += b->size;
+            if (b->size > out->largest_free)
+                out->largest_free = b->size;
+        } else {
+            out->used_blocks++;
+            out->used_bytes += b->size;
+        }
+    }
 }
 
 void heap_dump(void)
