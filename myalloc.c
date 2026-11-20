@@ -44,12 +44,72 @@ static inline block_t *header(void *ptr)
     return (block_t *)((char *)ptr - HDR);
 }
 
-/* ---- public API (filled in by later tasks) ---- */
+#define CHUNK     (64 * 1024)         /* minimum bytes asked from sbrk */
+
+static block_t *head = NULL;          /* first block (lowest address) */
+static block_t *tail = NULL;          /* last block (highest address) */
+static size_t   heap_total = 0;       /* bytes obtained from the OS */
+
+/* first byte after a block's payload */
+static inline char *block_end(block_t *b)
+{
+    return (char *)payload(b) + b->size;
+}
+
+/*
+ * Ask the OS for more memory with sbrk() and append it to the list as
+ * one free block with at least `need` payload bytes. Asks for at least
+ * CHUNK bytes so sbrk is not called for every small allocation.
+ * Returns the free block, or NULL if sbrk fails.
+ */
+static block_t *grow(size_t need)
+{
+    if (need > SIZE_MAX / 2)          /* far too big; avoid overflow */
+        return NULL;
+
+    size_t request = need + HDR;
+    if (request < CHUNK)
+        request = CHUNK;
+
+    /* the break may not be 16-byte aligned (libc moves it too) */
+    void *cur = sbrk(0);
+    if (cur == (void *)-1)
+        return NULL;
+    size_t pad = (ALIGNMENT - ((uintptr_t)cur & (ALIGNMENT - 1))) & (ALIGNMENT - 1);
+
+    void *mem = sbrk((intptr_t)(request + pad));
+    if (mem == (void *)-1)
+        return NULL;
+    heap_total += request + pad;
+
+    block_t *b = (block_t *)((char *)mem + pad);
+    b->size  = request - HDR;
+    b->next  = NULL;
+    b->free  = 1;
+    b->magic = MAGIC;
+
+    if (head == NULL)
+        head = b;
+    else
+        tail->next = b;
+    tail = b;
+    return b;
+}
+
+/* ---- public API ---- */
 
 void *my_malloc(size_t size)
 {
-    (void)size;
-    return NULL;
+    if (size == 0)
+        return NULL;
+    size_t need = align_up(size);
+
+    /* Task 2: every request gets a fresh block from the OS */
+    block_t *b = grow(need);
+    if (b == NULL)
+        return NULL;
+    b->free = 0;
+    return payload(b);
 }
 
 void my_free(void *ptr)
