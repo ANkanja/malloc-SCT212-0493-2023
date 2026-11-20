@@ -1,0 +1,33 @@
+name: build-and-test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with -Wall -Wextra -Werror (no warnings allowed)
+        run: gcc -std=c11 -Wall -Wextra -Werror -g -o test_myalloc myalloc.c test_myalloc.c
+
+      - name: Run test harness (make)
+        run: make
+
+      - name: Run test harness under AddressSanitizer + UBSan
+        run: |
+          gcc -std=c11 -g -fsanitize=address,undefined -o t_asan myalloc.c test_myalloc.c
+          ./t_asan
+
+      - name: Run benchmark
+        run: |
+          make bench | tee bench.txt
+          {
+            echo '### Benchmark (ubuntu-latest)'
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
