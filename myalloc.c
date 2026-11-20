@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>                    /* snprintf only: no printf/puts */
 #include <string.h>
 #include <unistd.h>
 #include "myalloc.h"
@@ -88,21 +89,38 @@ static block_t *grow(size_t need)
     b->free  = 1;
     b->magic = MAGIC;
 
-    if (head == NULL)
+    if (head == NULL) {
         head = b;
-    else
+    } else if (tail->free && block_end(tail) == (char *)b) {
+        /* new memory starts right after a free tail: extend it */
+        tail->size += HDR + b->size;
+        return tail;
+    } else {
         tail->next = b;
+    }
     tail = b;
     return b;
 }
 
-/* first-fit: the first free block that is big enough, or NULL */
+static fit_policy_t policy = FIT_FIRST;
+
+/*
+ * Find a free block with at least `need` bytes, or NULL.
+ * First-fit stops at the first one; best-fit scans the whole list and
+ * keeps the smallest one (stopping early on an exact match).
+ */
 static block_t *find_fit(size_t need)
 {
-    for (block_t *b = head; b != NULL; b = b->next)
-        if (b->free && b->size >= need)
+    block_t *best = NULL;
+    for (block_t *b = head; b != NULL; b = b->next) {
+        if (!b->free || b->size < need)
+            continue;
+        if (policy == FIT_FIRST || b->size == need)
             return b;
-    return NULL;
+        if (best == NULL || b->size < best->size)
+            best = b;
+    }
+    return best;
 }
 
 #define MIN_PAYLOAD 16                /* smallest block worth splitting off */
@@ -306,16 +324,48 @@ void heap_stats(heap_stats_t *out)
     }
 }
 
+/* one line per block; snprintf into a local buffer, then write() */
 void heap_dump(void)
 {
+    char line[128];
+    int i = 0;
+    for (block_t *b = head; b != NULL; b = b->next, i++) {
+        int len = snprintf(line, sizeof line, "[%2d] %p size=%zu %s\n",
+                           i, payload(b), b->size, b->free ? "FREE" : "USED");
+        if (len > 0) {
+            ssize_t r = write(STDOUT_FILENO, line, (size_t)len);
+            (void)r;
+        }
+    }
 }
 
 void set_policy(fit_policy_t p)
 {
-    (void)p;
+    if (p == FIT_FIRST || p == FIT_BEST)
+        policy = p;
 }
 
+/*
+ * Return 1 if the heap is consistent: every header is valid, every
+ * payload is aligned, blocks are in increasing address order without
+ * overlapping, and no two adjacent free blocks were left unmerged.
+ */
 int heap_check(void)
 {
-    return 1;
+    block_t *last = NULL;
+    for (block_t *b = head; b != NULL; b = b->next) {
+        if (b->magic != MAGIC || (b->free != 0 && b->free != 1))
+            return 0;                             /* bad header */
+        if (((uintptr_t)payload(b) & (ALIGNMENT - 1)) != 0 ||
+            (b->size & (ALIGNMENT - 1)) != 0)
+            return 0;                             /* misaligned */
+        if (b->next != NULL) {
+            if ((char *)b->next < block_end(b))
+                return 0;                         /* out of order / overlap */
+            if (b->free && b->next->free && block_end(b) == (char *)b->next)
+                return 0;                         /* missed a merge */
+        }
+        last = b;
+    }
+    return last == tail;
 }
