@@ -130,6 +130,60 @@ static void split(block_t *b, size_t need)
         tail = rest;
 }
 
+/* write a fixed message to stderr without stdio */
+static void report(const char *msg)
+{
+    ssize_t r = write(STDERR_FILENO, msg, strlen(msg));
+    (void)r;
+}
+
+/*
+ * Merge every run of free blocks that are physically next to each
+ * other. List neighbours are only merged when the first one's payload
+ * ends exactly where the second one's header starts: after a gap
+ * caused by libc moving the break they are not adjacent.
+ */
+static void coalesce(void)
+{
+    block_t *b = head;
+    while (b != NULL && b->next != NULL) {
+        block_t *n = b->next;
+        if (b->free && n->free && block_end(b) == (char *)n) {
+            b->size += HDR + n->size;     /* absorb n */
+            b->next  = n->next;
+            if (tail == n)
+                tail = b;
+            /* stay on b: it may now touch the next free block too */
+        } else {
+            b = n;
+        }
+    }
+}
+
+/*
+ * Find the block whose payload is ptr. Never reads memory outside the
+ * blocks we own, so a garbage pointer cannot crash us. Returns NULL if
+ * ptr is not the start of one of our payloads.
+ */
+static block_t *find_block(void *ptr)
+{
+    if (((uintptr_t)ptr & (ALIGNMENT - 1)) != 0)
+        return NULL;
+    for (block_t *b = head; b != NULL; b = b->next)
+        if (payload(b) == ptr)
+            return b->magic == MAGIC ? b : NULL;
+    return NULL;
+}
+
+/* is ptr somewhere inside a free block (e.g. a block merged away)? */
+static int inside_free_block(void *ptr)
+{
+    for (block_t *b = head; b != NULL; b = b->next)
+        if (b->free && (char *)ptr > (char *)b && (char *)ptr < block_end(b))
+            return 1;
+    return 0;
+}
+
 /* ---- public API ---- */
 
 void *my_malloc(size_t size)
@@ -151,7 +205,26 @@ void *my_malloc(size_t size)
 
 void my_free(void *ptr)
 {
-    (void)ptr;
+    if (ptr == NULL)
+        return;
+
+    block_t *b = find_block(ptr);
+    if (b == NULL) {
+        /* a block that was freed and then merged into its neighbour
+         * no longer has its own header in the list */
+        if (((uintptr_t)ptr & (ALIGNMENT - 1)) == 0 && inside_free_block(ptr))
+            report("my_free: double free detected\n");
+        else
+            report("my_free: invalid pointer\n");
+        return;
+    }
+    if (b->free) {
+        report("my_free: double free detected\n");
+        return;
+    }
+
+    b->free = 1;
+    coalesce();
 }
 
 void *my_calloc(size_t n, size_t size)
