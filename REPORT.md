@@ -56,6 +56,20 @@ time, and the times below are the range over the 4 runs.
 
 ## Discussion
 
-<!-- TODO: about 150 words, in my own words: which policy I would
-choose and why, and one reason my allocator is slower or less
-space-efficient than the C library's. -->
+<!-- DRAFT by Claude: edit into your own words before submitting. -->
+
+I would choose first-fit for this allocator. On this workload it used
+the same heap as best-fit, but it kept a larger free block (107,520 vs
+85,792 bytes), so its external fragmentation was lower (0.60 vs 0.68).
+It was also slightly faster, because it can stop at the first block
+that fits, while best-fit usually scans the whole list. Best-fit's
+promise of tighter packing did not pay off here. It left fewer free
+blocks, but it kept eating into the larger holes, and it handed out
+more unsplittable leftovers, which raised used_bytes.
+
+My allocator is about 40 times slower than the C library because every
+operation walks one list of all blocks. `my_malloc` searches it, and
+`my_free` scans it twice: once to validate the pointer and once to
+coalesce. The C library keeps segregated free lists (bins) by size and
+uses boundary tags, so finding a fit and merging neighbours take
+roughly constant time.
